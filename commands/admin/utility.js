@@ -250,4 +250,22 @@ const jailmessage = {
   }
 };
 
-module.exports = { lock, unlock, slowmode, announce, embed, schedule, joining, leaving, temprole, autorole, prefix, addcmd, delcmd, customcmd, jailcmd, unjail, jailmessage };
+const purge = {
+  name: 'purge',
+  adminOnly: true,
+  async execute(message, args, client, config) {
+    const amount = parseInt(args[0]);
+    if (isNaN(amount) || amount < 1 || amount > 100) {
+      return tempReply(message, errorEmbed('❌ Error', 'Please provide a number between 1 and 100.\nUsage: ?purge 10'));
+    }
+    try {
+      const deleted = await message.channel.bulkDelete(amount, true);
+      const reply = await message.channel.send({ embeds: [successEmbed('🗑️ Purge Complete', `Deleted **${deleted.size}** messages.`)] });
+      setTimeout(() => reply.delete().catch(() => {}), 5000);
+    } catch (e) {
+      tempReply(message, errorEmbed('❌ Error', 'Could not delete messages. Messages older than 14 days cannot be bulk deleted.'));
+    }
+  }
+};
+
+module.exports = { lock, unlock, slowmode, announce, embed, schedule, joining, leaving, temprole, autorole, prefix, addcmd, delcmd, customcmd, jailcmd, unjail, jailmessage, purge };
