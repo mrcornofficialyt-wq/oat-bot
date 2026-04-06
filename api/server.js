@@ -5,7 +5,12 @@ const { updateStatusEmbed } = require('../utils/botStatus');
 
 function startApiServer(client) {
   const app = express();
-  app.use(cors({ origin: process.env.DASHBOARD_URL || '*' }));
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'x-dashboard-secret'],
+}));
+app.options('*', cors());
   app.use(express.json());
 
   // Simple auth middleware
