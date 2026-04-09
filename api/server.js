@@ -5,12 +5,7 @@ const { updateStatusEmbed } = require('../utils/botStatus');
 
 function startApiServer(client) {
   const app = express();
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'x-dashboard-secret'],
-}));
-app.options('*', cors());
+  app.use(cors({ origin: process.env.DASHBOARD_URL || '*' }));
   app.use(express.json());
 
   // Simple auth middleware
@@ -19,6 +14,11 @@ app.options('*', cors());
     if (token !== process.env.DASHBOARD_SECRET) return res.status(401).json({ error: 'Unauthorized' });
     next();
   }
+
+  // ── Health check (no auth — Railway uses this to verify the service is up) ──
+  app.get('/health', (req, res) => {
+    res.json({ status: 'ok', uptime: process.uptime(), ping: client.ws.ping });
+  });
 
   // ── Guild info ──
   app.get('/api/guilds', auth, (req, res) => {
@@ -45,7 +45,6 @@ app.options('*', cors());
       if (!guild) return res.status(404).json({ error: 'Guild not found' });
       db.updateGuildConfig(guildId, req.body);
       const config = db.getGuildConfig(guildId);
-      // Update status embed in real-time
       if (config.bot_status_channel) {
         await updateStatusEmbed(guild, config, client).catch(() => {});
       }
@@ -103,7 +102,6 @@ app.options('*', cors());
     db.run('INSERT INTO ticket_panels (id, guild_id, name, embed_title, embed_description, embed_color, buttons, ping_roles, ticket_category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [id, guildId, name, embed_title, embed_description, embed_color || '#8000FF', JSON.stringify(buttons || []), JSON.stringify(ping_roles || []), ticket_category || null]);
 
-    // Send panel to channel if provided
     if (channel_id) {
       const guild = client.guilds.cache.get(guildId);
       const ch = guild?.channels.cache.get(channel_id);
@@ -131,13 +129,13 @@ app.options('*', cors());
   app.get('/api/guilds/:guildId/message-logs', auth, (req, res) => {
     const { guildId } = req.params;
     const { user_id, action, limit = 50, offset = 0 } = req.query;
-    let query = 'SELECT * FROM message_logs WHERE guild_id = ?';
+    let q = 'SELECT * FROM message_logs WHERE guild_id = ?';
     const params = [guildId];
-    if (user_id) { query += ' AND user_id = ?'; params.push(user_id); }
-    if (action) { query += ' AND action = ?'; params.push(action); }
-    query += ' ORDER BY logged_at DESC LIMIT ? OFFSET ?';
+    if (user_id) { q += ' AND user_id = ?'; params.push(user_id); }
+    if (action) { q += ' AND action = ?'; params.push(action); }
+    q += ' ORDER BY logged_at DESC LIMIT ? OFFSET ?';
     params.push(parseInt(limit), parseInt(offset));
-    res.json(db.query(query, params));
+    res.json(db.query(q, params));
   });
 
   // ── Leaderboard ──
@@ -146,7 +144,7 @@ app.options('*', cors());
     res.json(users);
   });
 
-  // ── Send bot action (announce, etc.) ──
+  // ── Send bot action ──
   app.post('/api/guilds/:guildId/action', auth, async (req, res) => {
     const { guildId } = req.params;
     const { type, channel_id, message, embed_color } = req.body;
@@ -171,8 +169,12 @@ app.options('*', cors());
     res.json({ success: true });
   });
 
-  const port = process.env.API_PORT || 3001;
-  app.listen(port, () => console.log(`✅ API server running on port ${port}`));
+  // ── CRITICAL FIX: Railway injects PORT env var for the web-facing port.
+  // The Procfile declares this as a "web" process, so Railway expects the
+  // server to bind to process.env.PORT — NOT a hardcoded port like 3001.
+  // Using 3001 means Railway's health checks fail → service marked crashed → restart loop.
+  const port = process.env.PORT || process.env.API_PORT || 3000;
+  app.listen(port, '0.0.0.0', () => console.log(`✅ API server running on port ${port}`));
 }
 
 module.exports = { startApiServer };
