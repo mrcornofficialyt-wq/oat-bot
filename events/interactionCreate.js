@@ -5,12 +5,29 @@ const { COLORS, isAdmin, successEmbed, errorEmbed, infoEmbed } = require('../uti
 module.exports = {
   name: 'interactionCreate',
   async execute(interaction, client) {
+    // Guard: DM interactions or non-guild contexts have no guild — don't crash
+    if (!interaction.guild) return;
+
+    // Only handle button interactions in this handler
     if (!interaction.isButton()) return;
-    const config = db.getGuildConfig(interaction.guild.id);
+
+    let config;
+    try {
+      config = db.getGuildConfig(interaction.guild.id);
+    } catch (e) {
+      console.error('interactionCreate: failed to get guild config:', e.message);
+      return;
+    }
 
     // Unjail button
     if (interaction.customId.startsWith('unjail_')) {
-      const [, userId, channelId, roleId] = interaction.customId.split('_');
+      const parts = interaction.customId.split('_');
+      // format: unjail_{userId}_{channelId}_{roleId}
+      // userId/channelId/roleId may themselves contain underscores — use fixed positions
+      const userId = parts[1];
+      const channelId = parts[2];
+      const roleId = parts[3];
+
       if (!isAdmin(interaction.member, config)) {
         return interaction.reply({ content: 'Only admins can unjail users.', ephemeral: true });
       }
@@ -23,17 +40,14 @@ module.exports = {
         const member = interaction.guild.members.cache.get(userId) || await interaction.guild.members.fetch(userId).catch(() => null);
         const jailRole = interaction.guild.roles.cache.get(roleId);
 
-        // Remove jail role
         if (member && jailRole) await member.roles.remove(jailRole).catch(() => {});
         if (jailRole) await jailRole.delete().catch(() => {});
 
-        // Give unjail role if configured
         if (config.unjail_give_role && member) {
           const giveRole = interaction.guild.roles.cache.get(config.unjail_give_role);
           if (giveRole) await member.roles.add(giveRole).catch(() => {});
         }
 
-        // Save transcript and log
         const transcript = session.transcript || '';
         if (config.jail_log_channel) {
           const logCh = interaction.guild.channels.cache.get(config.jail_log_channel);
@@ -68,7 +82,7 @@ module.exports = {
 
     // Ticket claim button
     if (interaction.customId.startsWith('claim_ticket_')) {
-      const ticketId = interaction.customId.split('_')[2];
+      const ticketId = interaction.customId.replace('claim_ticket_', '');
       const ticket = db.get('SELECT * FROM tickets WHERE id = ?', [ticketId]);
       if (!ticket) return interaction.reply({ content: 'Ticket not found.', ephemeral: true });
       if (ticket.claimed_by) return interaction.reply({ content: 'This ticket is already claimed.', ephemeral: true });
@@ -77,7 +91,6 @@ module.exports = {
       db.run('UPDATE tickets SET claimed_by = ? WHERE id = ?', [interaction.user.id, ticketId]);
       const ch = interaction.guild.channels.cache.get(ticket.channel_id);
       if (ch) {
-        // Lock channel to only this admin + ticket creator
         await ch.permissionOverwrites.set([
           { id: interaction.guild.id, deny: ['ViewChannel'] },
           { id: ticket.user_id, allow: ['ViewChannel', 'SendMessages'] },
@@ -92,7 +105,7 @@ module.exports = {
 
     // Ticket close button
     if (interaction.customId.startsWith('close_ticket_')) {
-      const ticketId = interaction.customId.split('_')[2];
+      const ticketId = interaction.customId.replace('close_ticket_', '');
       const ticket = db.get('SELECT * FROM tickets WHERE id = ?', [ticketId]);
       if (!ticket) return interaction.reply({ content: 'Ticket not found.', ephemeral: true });
 
@@ -105,7 +118,6 @@ module.exports = {
         const ch = interaction.guild.channels.cache.get(ticket.channel_id);
         db.run('UPDATE tickets SET status = ?, closed_at = ? WHERE id = ?', ['closed', Math.floor(Date.now() / 1000), ticketId]);
 
-        // Send review DM if ticket was claimed
         if (ticket.claimed_by) {
           const ticketUser = await client.users.fetch(ticket.user_id).catch(() => null);
           if (ticketUser) {
@@ -135,9 +147,16 @@ module.exports = {
 
     // Open ticket from panel
     if (interaction.customId.startsWith('open_ticket_')) {
-      const panelId = interaction.customId.split('_')[2];
-      const { openTicket } = require('../systems/tickets');
-      await openTicket(interaction, panelId, config, client);
+      const panelId = interaction.customId.replace('open_ticket_', '');
+      try {
+        const { openTicket } = require('../systems/tickets');
+        await openTicket(interaction, panelId, config, client);
+      } catch (e) {
+        console.error('Open ticket error:', e);
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({ content: 'Failed to open ticket.', ephemeral: true }).catch(() => {});
+        }
+      }
       return;
     }
 
@@ -168,7 +187,7 @@ module.exports = {
 
     // Giveaway enter
     if (interaction.customId.startsWith('giveaway_enter_')) {
-      const gId = interaction.customId.split('_')[2];
+      const gId = interaction.customId.replace('giveaway_enter_', '');
       const giveaway = db.get('SELECT * FROM giveaways WHERE id = ?', [gId]);
       if (!giveaway || giveaway.ended) return interaction.reply({ content: 'This giveaway has ended.', ephemeral: true });
 
