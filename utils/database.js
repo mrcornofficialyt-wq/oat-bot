@@ -5,8 +5,24 @@ const fs = require('fs-extra');
 const DB_PATH = path.join(__dirname, '..', 'data', 'bot.db');
 let db = null;
 
-// Save DB to disk
+// ── Debounced disk save ─────────────────────────────────────────────────────
+// The original code called saveToDisk() on EVERY run() call.
+// Under any kind of load (leveling XP, logging, etc.) this caused
+// constant synchronous file I/O that would lock the event loop and crash.
+// Now we only write to disk on a timer (every 30s) or when explicitly flushed.
+
+let _saveTimer = null;
+
+function scheduleSave() {
+  if (_saveTimer) return; // already scheduled
+  _saveTimer = setTimeout(() => {
+    _saveTimer = null;
+    saveToDisk();
+  }, 5000); // flush within 5 seconds of last write
+}
+
 function saveToDisk() {
+  if (!db) return;
   try {
     const data = db.export();
     const buffer = Buffer.from(data);
@@ -17,7 +33,7 @@ function saveToDisk() {
   }
 }
 
-// Auto-save every 30 seconds
+// Periodic save every 30 seconds as a safety net
 let saveInterval = null;
 
 async function initialize() {
@@ -32,7 +48,16 @@ async function initialize() {
   }
 
   createTables();
+
+  // Periodic save — don't rely solely on the debounce
+  if (saveInterval) clearInterval(saveInterval);
   saveInterval = setInterval(saveToDisk, 30000);
+
+  // Flush on clean process exit
+  process.on('exit', saveToDisk);
+  process.on('SIGTERM', () => { saveToDisk(); process.exit(0); });
+  process.on('SIGINT', () => { saveToDisk(); process.exit(0); });
+
   console.log('✅ Database initialized');
 }
 
@@ -275,9 +300,9 @@ function get(sql, params = []) {
 function run(sql, params = []) {
   if (!db) throw new Error('DB not initialized');
   db.run(sql, params);
-  // Return lastInsertRowid equivalent
   const row = get('SELECT last_insert_rowid() as id');
-  saveToDisk();
+  // Schedule a debounced save instead of writing to disk on every call
+  scheduleSave();
   return { lastInsertRowid: row ? row.id : null };
 }
 
